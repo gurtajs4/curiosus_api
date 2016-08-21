@@ -3,6 +3,10 @@ env
 *.pyc
 __pycache__
 
+app.db
+
+.python_version
+
 # Elastic Beanstalk Files
 .elasticbeanstalk/*
 !.elasticbeanstalk/*.cfg.yml
