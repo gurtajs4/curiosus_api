@@ -11,3 +11,6 @@ app.db
 .elasticbeanstalk/*
 !.elasticbeanstalk/*.cfg.yml
 !.elasticbeanstalk/*.global.yml
+
+
+flask_session

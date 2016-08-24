@@ -1,0 +1,79 @@
+<!-- extend base layout -->
+{% extends "base.html" %} {% block head %} {{ mymap.js }} {% endblock %} {% block content %}
+
+<div class="row">
+    <div class="col-lg-12">
+        <h1 class="page-header">Device</h1>
+    </div>
+    <!-- /.col-lg-12 -->
+</div>
+
+<div class="row">
+    <center>
+
+        <p>
+            <a href="/messages/telegram/{{device.imei}}"><button type="button" class="btn btn-primary">Telegram</button></a>
+            <a href="/messages/telegram/{{device.imei}}"><button type="button" class="btn btn-success">WhatsApp</button></a>
+            <a href="/messages/telegram/{{device.imei}}"><button type="button" class="btn btn-info">Skype</button></a>
+        </p>
+    </center>
+</div>
+<div class="row">
+    <div class="col-lg-4">
+        <div class="panel panel-default">
+            <div class="panel-heading">
+                About
+            </div>
+            <!-- /.panel-heading -->
+            <div class="panel-body">
+                <p>
+                    ID: {{ device.id }}
+                </p>
+                <p>
+                    IMEI: {{ device.imei }}
+                </p>
+                <p>
+                    Serial: {{ device.serial }}
+                </p>
+                <p>
+                    Model: {{ device.brand }} {{ device.model }}
+                </p>
+                <p>
+                    Number: {{ device.number }}
+                </p>
+                <p>
+                    Android: {{ device.android_version }}
+                </p>
+                <p>
+                    Curiosus: {{ device.droidwatcher_version }}
+                </p>
+                <p>
+                    Rooted?: {{ device.root }}
+                </p>
+                <p>
+                    Email List: {{ device.email_list }}
+                </p>
+            </div>
+            <!-- /.panel-body -->
+        </div>
+        <!-- /.panel -->
+    </div>
+
+    <div class="col-lg-8">
+        <div class="panel panel-default">
+            <div class="panel-heading">
+                Tracking
+            </div>
+            <!-- /.panel-heading -->
+            <div class="panel-body">
+                {{ mymap.html }} {{ mymap.js }}
+            </div>
+            <!-- /.panel-body -->
+        </div>
+        <!-- /.panel -->
+    </div>
+    <!-- /.col-lg-12 -->
+</div>
+
+
+{% endblock %}
